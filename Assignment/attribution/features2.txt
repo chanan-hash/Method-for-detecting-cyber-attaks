@@ -1,0 +1,89 @@
+def create_new_features(df):
+    # Timing features
+    # df['Timestamp'] = pd.to_datetime(df['Timestamp'], unit='s')
+    # df['hour'] = df['Timestamp'].dt.hour
+    # df['minute'] = df['Timestamp'].dt.minute
+    # df['day_of_week'] = df['Timestamp'].dt.dayofweek
+    # df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
+    
+    # IP-based features
+    def ip_to_int(ip):
+        try:
+            parts = [int(part) for part in ip.split('.')]
+            return parts[0] * 256**3 + parts[1] * 256**2 + parts[2] * 256 + parts[3]
+        except:
+            return 0
+    
+    non_numeric_cols = ['Protocol']
+    for col in non_numeric_cols:
+        combined_values = pd.concat([train_df[col], test_df[col]], axis=0).astype(str).unique()
+        train_df[col] = pd.Categorical(train_df[col], categories=combined_values).codes
+        test_df[col] = pd.Categorical(test_df[col], categories=combined_values).codes
+    
+    df['Source_IP_num'] = df['Source_IP'].apply(ip_to_int)
+    df['Destination_IP_num'] = df['Destination_IP'].apply(ip_to_int)
+    
+    # Packet statistics
+    df['packets_ratio'] = df['fwd_packets_amount'] / (df['bwd_packets_amount'] + 1)
+    df['bytes_ratio'] = df['fwd_packets_length'] / (df['bwd_packets_length'] + 1)
+    df['total_packets'] = df['fwd_packets_amount'] + df['bwd_packets_amount']
+    df['total_bytes'] = df['fwd_packets_length'] + df['bwd_packets_length']
+    df['avg_fwd_packet_size'] = df['fwd_packets_length'] / (df['fwd_packets_amount'] + 1)
+    df['avg_bwd_packet_size'] = df['bwd_packets_length'] / (df['bwd_packets_amount'] + 1)
+    
+    # Flag combinations
+    df['total_flags'] = df['FIN_count'] + df['SYN_count'] + df['RST_count'] + df['PSH_count']
+    
+    # Inter-arrival time statistics
+    df['fwd_iat_mean'] = df['mean_fwd_inter_arrival_time']
+    df['bwd_iat_mean'] = df['mean_bwd_inter_arrival_time']
+    df['iat_ratio'] = df['fwd_iat_mean'] / (df['bwd_iat_mean'] + 1)
+    
+    # Packet size patterns
+    packet_size_cols = [col for col in df.columns if col.startswith('first_packet_sizes_')]
+    df['mean_first_packet_size'] = df[packet_size_cols].mean(axis=1)
+    df['std_first_packet_size'] = df[packet_size_cols].std(axis=1)
+    df['max_first_packet_size'] = df[packet_size_cols].max(axis=1)
+    df['min_first_packet_size'] = df[packet_size_cols].min(axis=1)
+    
+    # Bandwidth features
+    bandwidth_cols = [col for col in df.columns if col.startswith('bandwidth_')]
+    df['mean_bandwidth'] = df[bandwidth_cols].mean(axis=1)
+    df['std_bandwidth'] = df[bandwidth_cols].std(axis=1)
+    df['max_bandwidth'] = df[bandwidth_cols].max(axis=1)
+    
+    return df
+
+
+
+
+def select_features(X, y, correlation_matrix, correlation_threshold=0.95):
+    # Remove highly correlated features
+    highly_correlated = np.where(np.abs(correlation_matrix) > correlation_threshold)
+    highly_correlated = [(correlation_matrix.index[x], correlation_matrix.columns[y]) 
+                        for x, y in zip(*highly_correlated) if x != y and x < y]
+    
+    features_to_drop = set()
+    for feat1, feat2 in highly_correlated:
+        if feat1 not in features_to_drop:
+            features_to_drop.add(feat2)
+    
+    X = X.drop(columns=list(features_to_drop))
+    
+    # Select best features using mutual information
+    selector = SelectKBest(score_func=mutual_info_classif, k='all')
+    selector.fit(X, y)
+    
+    feature_scores = pd.DataFrame({
+        'Feature': X.columns,
+        'Score': selector.scores_
+    })
+    
+    print("\nTop 20 features by mutual information:")
+    print(feature_scores.sort_values('Score', ascending=False).head(20))
+    
+    # Select top features
+    k = 30  # Number of features to select
+    best_features = feature_scores.nlargest(k, 'Score')['Feature'].tolist()
+    
+    return X[best_features]
